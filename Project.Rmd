@@ -1,0 +1,181 @@
+---
+title: "Coursera Practical Machine Learning Project"
+date: "Dec. 2014"
+output: html_document
+---
+## 0. Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+## 1. Preliminary steps
+
+First, we load the required libraries and read the dataset and the test cases from CSV files:
+
+```{r, message=F, warning=F}
+library(caret)
+library(doParallel)
+set.seed(999)
+setwd("E:/DataAnalysis/R Projects/Coursera_Practical machine learning/Project/")
+dataset = read.csv2("pml-training.csv", na.strings=c("NA","#DIV/0!"), sep=",", dec=".")
+testcases = read.csv2("pml-testing.csv", na.strings=c("NA","#DIV/0!"), sep=",", dec=".")
+
+```
+
+We can check the size of the dataset and the distribution of the classes to predict:
+
+```{r}
+dim(dataset)
+plot(dataset$classe, main ="Distribution of the 5 classes to predict in the complete dataset")
+```
+
+## 2. Data preparation
+
+The first 7 colums of the dataset are not relevant to make predictions, so we can remove them :
+```{r}
+list1 = c(1,2,3,4,5,6,7)
+names(dataset[list1])
+filteredData <- dataset[-list1]
+
+```
+
+We can also remove the columns with a large number of NA values:
+```{r}
+list2 <- which((colSums(is.na(filteredData))/nrow(filteredData)) > 0.8)
+length(list2)
+filteredData <- filteredData[-list2]
+
+```
+
+
+To obtain faster computation time, we take a 25% sample of the dataset which will be used in the learning procedure. We keep the remaining of the data as a testing sample:
+
+```{r}
+partition <- createDataPartition(filteredData$classe, p=0.25, list=FALSE)
+training <- filteredData[partition,]
+testing <- filteredData[-partition,]
+dim(training)
+```
+
+We can check that the distribution of the 5 classes to predict in the sample is the same as in the full dataset: 
+
+```{r}
+plot(training$classe, main ="Distribution of the 5 classes to predict in the sample")
+```
+
+
+## 3. Building the model
+We choose to use a Random Forest algorithm which seems to be appropriate to our situation: 
+
+- the predictors are numerical
+
+- the parameter to predict is categorical
+
+- there is no reason to suspect a linear relationship
+
+Cross-validation is "baked in" the Random Forest algorithm : each tree is constructed with a different bootstrap sample from the data, and the data not used to contruct a tree is used to calculate an out-of-bag error estimate.
+For more details, see "The out-of-bag (oob) error estimate" at https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm 
+
+To improve computing time, we also make use of parallel processing as described here: http://stackoverflow.com/questions/13403427/fully-reproducible-parallel-models-using-caret
+
+
+```{r}
+cl <- makeCluster(detectCores()/2)
+registerDoParallel(cl)
+modFit1 <- train(classe~. , method="rf", data=training, prox=TRUE)
+
+```
+
+
+## 4. Model evaluation
+
+We can display the evaluation provided by the Random Tree model itself, as well as the variable importance:
+
+```{r}
+print(modFit1$finalModel)
+imp <- varImp(modFit1)
+print(imp)
+
+```
+
+It appears that the accuracy is very good, with an estimate out-of-bag error of 1.8%. So we can expect an out of sample error of around 2%.
+
+We can test the performance of the prediction of our model on the testing set:
+
+```{r}
+missClass = function(values,prediction){sum(prediction != values)/length(values)}
+
+pred <- predict(modFit1, newdata=testing)
+missClass(testing$classe, pred)
+```
+
+We observe a misclassification rate of 2.5%, which is in line with our expectations.
+
+We can now apply our fitted model to the test cases:
+
+```{r}
+pred <- predict(modFit1, newdata=testcases)
+print(pred)
+
+```
+
+We can display an image plot of the test cases, sorting by predicted class and ordering by predictor importance. Unfortunately, there is no striking visual similarity between elements of a same class :
+
+```{r}
+filteredTestcases <- testcases[names(testcases) %in% names(filteredData)]
+filteredTestcases <- filteredTestcases[order(imp$importance, decreasing = TRUE)]
+filteredTestcases["class"] = pred
+filteredTestcases <- filteredTestcases[order(filteredTestcases$class, decreasing = TRUE),]
+m = as.matrix(filteredTestcases[,1:52])
+x <- (1:nrow(m))
+y <- (1:ncol(m))
+image(y, x, t(m), axes=FALSE,xlab="",ylab="",srt=45, main="Image of the 20 test cases, sorted by predicted class")
+axis(2, at = 1:nrow(m), labels=filteredTestcases$class,srt=45,tick=FALSE, cex.axis=0.5)
+
+```
+
+## 5. Using 10 fold cross-validation
+Although the Random Forest algorithm gives an out-of-bag error, we can also try to add an cross-validation step:
+
+```{r}
+train_control <- trainControl(method="cv", number=10)
+modFit2 <- train(classe~. , method="rf", trControl=train_control, data=training, prox=TRUE)
+print(modFit2$finalModel)
+varImp(modFit2)
+```
+
+We can see that the out-of-bag error rate is not improved, still around 1.8%.
+
+Applying this model to the test cases:
+
+```{r}
+print(predict(modFit2, newdata=testcases))
+
+```
+
+We can check that the predicted output is the same as with simple Random Forest.
+
+## 6. Creating the required file output
+
+We use the provided script to write the predicted answers to files.
+
+```{r}
+answers <- predict(modFit1, newdata=testcases)
+print(answers)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+
+```
+
+Release the resources used for parallel calculations:
+
+```{r}
+stopCluster(cl)
+```
